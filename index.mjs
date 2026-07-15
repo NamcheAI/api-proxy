@@ -26,6 +26,11 @@ const APP_DEFINITIONS = {
   github: {
     path: '/v1/webhooks/apps/github/:owner/:repo',
   },
+  // GitHub App: single fixed webhook URL for all installations/repos.
+  // owner/repo are derived from the payload, not the path.
+  githubApp: {
+    path: '/v1/webhooks/apps/github-app',
+  },
   gmail: {
     path: '/v1/webhooks/agents/:agentId/gmail/:subscription',
   },
@@ -115,6 +120,7 @@ app.get('/healthz', (c) => {
   const routes = [];
   if (isAppRouteEnabled('krisp')) routes.push(APP_DEFINITIONS.krisp.path);
   if (isAppRouteEnabled('github')) routes.push(APP_DEFINITIONS.github.path);
+  if (isAppRouteEnabled('githubApp')) routes.push(APP_DEFINITIONS.githubApp.path);
   if (config.webform.enabled) routes.push(WEBFORM_PATH);
   if (isAppRouteEnabled('gmail')) routes.push(APP_DEFINITIONS.gmail.path);
 
@@ -127,6 +133,7 @@ app.get('/healthz', (c) => {
     routeToggles: {
       krisp: isAppRouteEnabled('krisp'),
       github: isAppRouteEnabled('github'),
+      githubApp: isAppRouteEnabled('githubApp'),
       webform: config.webform.enabled,
       gmail: isAppRouteEnabled('gmail'),
     },
@@ -138,6 +145,7 @@ app.get('/healthz', (c) => {
 
 if (isAppRouteEnabled('krisp')) app.post(APP_DEFINITIONS.krisp.path, handleKrispWebhook);
 if (isAppRouteEnabled('github')) app.post(APP_DEFINITIONS.github.path, handleGithubWebhook);
+if (isAppRouteEnabled('githubApp')) app.post(APP_DEFINITIONS.githubApp.path, handleGithubAppWebhook);
 if (config.webform.enabled) app.post(WEBFORM_PATH, handleWebformWebhook);
 if (isAppRouteEnabled('gmail')) app.post(APP_DEFINITIONS.gmail.path, handleGmailWebhook);
 
@@ -378,6 +386,41 @@ function normalizeConfig(raw) {
       }
 
       normalizedApps.github = { ...appDef, enabled: true, targetAgent, webhookSecret, sessionKey };
+      continue;
+    }
+
+    // github-app is optional — only active when present in config
+    if (appId === 'githubApp') {
+      if (!appConfig) continue;
+      if (typeof appConfig !== 'object') {
+        throw new Error(`[api-proxy] App 'githubApp' config must be an object`);
+      }
+
+      const enabled = appConfig.enabled ?? true;
+      if (typeof enabled !== 'boolean') {
+        throw new Error(`[api-proxy] App 'githubApp' enabled must be a boolean`);
+      }
+      if (!enabled) {
+        normalizedApps.githubApp = { ...appDef, enabled: false };
+        continue;
+      }
+
+      const targetAgent = String(appConfig.targetAgent ?? '').trim();
+      if (!targetAgent) throw new Error(`[api-proxy] App 'githubApp' missing targetAgent`);
+      if (!normalizedAgents[targetAgent]) {
+        throw new Error(`[api-proxy] App 'githubApp' references unknown agent '${targetAgent}'`);
+      }
+
+      const webhookSecret = String(appConfig.webhookSecret ?? '').trim();
+      const sessionKey = String(appConfig.sessionKey ?? '').trim();
+      if (!webhookSecret) {
+        throw new Error(`[api-proxy] App 'githubApp' missing webhookSecret`);
+      }
+      if (!sessionKey) {
+        throw new Error(`[api-proxy] App 'githubApp' missing sessionKey`);
+      }
+
+      normalizedApps.githubApp = { ...appDef, enabled: true, targetAgent, webhookSecret, sessionKey };
       continue;
     }
 
@@ -705,6 +748,102 @@ async function handleGithubWebhook(c) {
     const code = error?.name === 'AbortError' ? 504 : 502;
     const messageText = error instanceof Error ? error.message : 'forward request failed';
     log('error', `[api-proxy] app=github owner=${owner} repo=${repo} event=${event} error=${messageText}`);
+    return c.json({ ok: false, error: messageText }, code);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function handleGithubAppWebhook(c) {
+  const path = new URL(c.req.url).pathname;
+  const appConfig = config.apps.githubApp;
+
+  if (!appConfig) {
+    log('warn', `[api-proxy] github_app_not_configured path=${path}`);
+    return c.json({ ok: false, error: 'not_configured' }, 404);
+  }
+
+  const body = await c.req.arrayBuffer();
+  const rawBody = Buffer.from(body);
+  const signatureHeader = c.req.header('x-hub-signature-256');
+
+  if (!verifyGithubSignature(rawBody, signatureHeader, appConfig.webhookSecret)) {
+    log('warn', `[api-proxy] unauthorized app=github-app reason=signature_invalid`);
+    return c.json({ ok: false, error: 'unauthorized' }, 401);
+  }
+
+  const event = String(c.req.header('x-github-event') ?? '').trim() || 'unknown';
+  const delivery = String(c.req.header('x-github-delivery') ?? '').trim();
+  const rawMessage = toUtf8(rawBody);
+
+  let parsedPayload;
+  try {
+    parsedPayload = JSON.parse(rawMessage);
+  } catch {
+    parsedPayload = rawMessage;
+  }
+
+  const isObject = typeof parsedPayload === 'object' && parsedPayload !== null;
+  const action = isObject ? String(parsedPayload.action ?? '').trim() : '';
+  const repository = isObject ? String(parsedPayload.repository?.full_name ?? '').trim() : '';
+  const [owner = '', repo = ''] = repository.split('/');
+  const installationId = isObject ? (parsedPayload.installation?.id ?? null) : null;
+
+  logDebugPayload('incoming_payload', {
+    app: 'github-app',
+    path,
+    repository,
+    event,
+    action,
+    delivery,
+    installationId,
+    sessionKey: appConfig.sessionKey,
+    bytes: body.byteLength,
+    bodyPreview: previewText(rawMessage),
+  });
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FORWARD_TIMEOUT_MS);
+
+  try {
+    const message = JSON.stringify({
+      source: 'github-app',
+      owner,
+      repo,
+      repository,
+      event,
+      action,
+      delivery,
+      installationId,
+      payload: parsedPayload,
+    });
+
+    const payload = JSON.stringify({
+      name: `github-app:${repository || 'unknown'}`,
+      message,
+      sessionKey: appConfig.sessionKey,
+      wakeMode: 'now',
+      deliver: true,
+    });
+
+    logDebugPayload('forward_payload', {
+      app: 'github-app',
+      repository,
+      event,
+      action,
+      targetAgent: appConfig.targetAgent,
+      ...buildForwardEnvelopeDebug(payload),
+    });
+
+    const agentConfig = config.agents[appConfig.targetAgent];
+    const upstream = await forwardToAgent(agentConfig, payload, controller.signal);
+
+    log('info', `[api-proxy] app=github-app repository=${repository || 'none'} event=${event} action=${action || 'none'} agent=${appConfig.targetAgent} sessionKey=${appConfig.sessionKey} status=${upstream.status} bytes=${body.byteLength}`);
+    return upstream;
+  } catch (error) {
+    const code = error?.name === 'AbortError' ? 504 : 502;
+    const messageText = error instanceof Error ? error.message : 'forward request failed';
+    log('error', `[api-proxy] app=github-app repository=${repository || 'none'} event=${event} error=${messageText}`);
     return c.json({ ok: false, error: messageText }, code);
   } finally {
     clearTimeout(timeout);

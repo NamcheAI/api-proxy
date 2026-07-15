@@ -9,7 +9,7 @@
 - Krisp ingress is `POST /v1/webhooks/agents/:agentId/notetaker/:notetakerId` with `:notetakerId` currently fixed to `krisp`.
 - For Krisp auth, use `apps.krisp.agents.<agentId>.incomingAuthorization`. The route `:agentId` selects which configured agent receives the webhook.
 - Do not treat the route `:agentId` as an OpenClaw hook payload `agentId`. Krisp routing inside the target agent is done with `sessionKey: hook:notetaker:krisp`.
-- GitHub remains an optional app-specific route at `POST /v1/webhooks/apps/github/:owner/:repo`. Gmail and webforms remain agent-scoped routes under `/v1/webhooks/agents/:agentId/...`.
+- GitHub remains an optional app-specific route at `POST /v1/webhooks/apps/github/:owner/:repo`. A GitHub App (single webhook URL, owner/repo from payload) has its own route at `POST /v1/webhooks/apps/github-app`. Gmail and webforms remain agent-scoped routes under `/v1/webhooks/agents/:agentId/...`.
 - Production deploy target is `/home/deploy/apps/api-proxy` on `bertrand.batlogg.com` with systemd unit `api-proxy.service`. Do not deploy app source into nginx web root (`/var/www/html`).
 - If a rule discovered here should apply across repositories, move it into `jodok/agents` first and then sync it back here.
 

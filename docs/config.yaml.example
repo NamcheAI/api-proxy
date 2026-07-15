@@ -64,6 +64,18 @@ apps:
     webhookSecret: <GITHUB_WEBHOOK_SECRET>
     sessionKey: agent:main:discord:channel:<DISCORD_CHANNEL_ID>
 
+  # github-app is optional — one fixed webhook URL for a GitHub App (all repos).
+  # owner/repo are derived from the payload, not the URL path.
+  # Webhook URL (single, fixed):
+  #   /v1/webhooks/apps/github-app
+  # Use this for the Tashi review App; keep the per-repo `github` route above
+  # for the existing notification webhooks — separate secrets, separate concerns.
+  githubApp:
+    enabled: true
+    targetAgent: tashi
+    webhookSecret: <GITHUB_APP_WEBHOOK_SECRET>
+    sessionKey: hook:github-app:review
+
   # webforms: handled generically via POST /v1/webhooks/agents/:agentId/webform/:formId
   # No config needed — any formId is accepted and forwarded as webform:<formId>
   # The receiving agent's webform.md playbook routes by formId.
