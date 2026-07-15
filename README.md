@@ -11,7 +11,8 @@ Hono service for `api.namche.ai`.
 ## Current Endpoints
 
 - `POST /v1/webhooks/agents/:agentId/notetaker/:notetakerId` (currently `:notetakerId` = `krisp`)
-- `POST /v1/webhooks/apps/github/:owner/:repo` (optional, GitHub webhooks)
+- `POST /v1/webhooks/apps/github/:owner/:repo` (optional, per-repo GitHub webhooks)
+- `POST /v1/webhooks/apps/github-app` (optional, single GitHub App webhook; owner/repo from payload)
 - `POST /v1/webhooks/agents/:agentId/webform/:formId`
 - `POST /v1/webhooks/agents/:agentId/gmail/:subscription` (optional, Gmail Pub/Sub push)
 
@@ -124,6 +125,45 @@ apps:
     targetAgent: tashi
     webhookSecret: <GITHUB_WEBHOOK_SECRET>
     sessionKey: agent:main:discord:channel:<DISCORD_CHANNEL_ID>
+```
+
+## GitHub App Forwarding
+
+For a GitHub App (single webhook URL across all installed repos), rather than a
+per-repo webhook. Used by the Tashi review App.
+
+Incoming endpoint:
+
+- `POST /v1/webhooks/apps/github-app`
+- auth: GitHub HMAC signature (`X-Hub-Signature-256`) using `apps.githubApp.webhookSecret`
+
+Routing model:
+
+- one fixed URL for all repos; `owner`/`repo`/`repository` are derived from `payload.repository.full_name`
+- `installationId` from `payload.installation.id` is forwarded as metadata
+- all events forward to `apps.githubApp.targetAgent` on one `apps.githubApp.sessionKey`
+
+Forwarded payload:
+
+```json
+{
+  "name": "github-app:<owner>/<repo>",
+  "message": "{\"source\":\"github-app\",\"owner\":\"<owner>\",\"repo\":\"<repo>\",\"repository\":\"<owner>/<repo>\",\"event\":\"<x-github-event>\",\"action\":\"<payload.action>\",\"delivery\":\"<x-github-delivery>\",\"installationId\":<id>,\"payload\":{...}}",
+  "sessionKey": "hook:github-app:review",
+  "wakeMode": "now",
+  "deliver": true
+}
+```
+
+Config:
+
+```yaml
+apps:
+  githubApp:
+    enabled: true
+    targetAgent: tashi
+    webhookSecret: <GITHUB_APP_WEBHOOK_SECRET>
+    sessionKey: hook:github-app:review
 ```
 
 ## Webform Forwarding
