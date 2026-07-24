@@ -259,15 +259,25 @@ npm install
 CONFIG_PATH=./docs/config.yaml.example npm start
 ```
 
-## Deploy (bertrand.batlogg.com)
+## Deploy (manual, over the tailnet)
 
-GitHub Actions deploy is defined in:
+The rp hosts are tailnet-only / behind office NAT and are not reachable
+from a GitHub runner (their public DNAT is 443/80 only, not SSH), so there
+is no push-CD for this service. Deploy manually, from an operator's
+machine connected to the tailnet:
 
-- `.github/workflows/deploy.yaml`
+```bash
+./deploy.sh              # deploys to rp-civ (production, default)
+./deploy.sh <host>       # deploys to another rp host, e.g. rp-hetzner
+```
+
+`deploy.sh` tars the working tree (excluding `.git`, `.github`,
+`node_modules`, `.env`) and pipes it over SSH to the target host, installs
+production dependencies, and restarts the `api-proxy` systemd unit.
+Requires SSH access as the `admin` user (has sudo) on the target host.
 
 It deploys to:
 
-- host: `bertrand.batlogg.com`
 - path: `/home/deploy/apps/api-proxy`
 - restart target: `api-proxy.service`
 
@@ -276,9 +286,10 @@ Nginx integration (from infra):
 - `api.namche.ai` proxies to `http://127.0.0.1:3000`
 - proxy headers come from `/etc/nginx/proxy_params`
 
-Production files on Bertrand:
+Production files on the rp host (rp-civ today):
 
-- `/etc/api-proxy/config.yaml`
+- `/etc/api-proxy/config.yaml` — managed by ansible (`roles/app_api_proxy`),
+  not by `deploy.sh`
 
 Config contains secrets. Restrict file permissions accordingly.
 
