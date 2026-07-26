@@ -10,7 +10,7 @@
 - For Krisp auth, use `apps.krisp.agents.<agentId>.incomingAuthorization`. The route `:agentId` selects which configured agent receives the webhook.
 - Do not treat the route `:agentId` as an OpenClaw hook payload `agentId`. Krisp routing inside the target agent is done with `sessionKey: hook:notetaker:krisp`.
 - GitHub remains an optional app-specific route at `POST /v1/webhooks/apps/github/:owner/:repo`. A GitHub App (single webhook URL, owner/repo from payload) has its own route at `POST /v1/webhooks/apps/github-app`. Gmail and webforms remain agent-scoped routes under `/v1/webhooks/agents/:agentId/...`.
-- Production deploy target is `/home/deploy/apps/api-proxy` on the rp hosts (`rp-civ` today, `rp-hetzner` later) with systemd unit `api-proxy.service`, deployed via `./deploy.sh` over the tailnet (the rp hosts are tailnet-only and unreachable from CI). Do not deploy app source into nginx web root (`/var/www/html`).
+- Production deploy target is `/home/deploy/apps/api-proxy` on both rp hosts with systemd unit `api-proxy.service`. `NamcheAI/infra` owns the pinned source checkout, production dependencies, runtime config, TLS vhost, and service lifecycle through `ansible/roles/app_api_proxy`; this repository must not carry a second deployment path. Do not deploy app source into nginx web root (`/var/www/html`).
 - If a rule discovered here should apply across repositories, move it into `jodok/agents` first and then sync it back here.
 
 ## Global rules

@@ -9,7 +9,7 @@ installed repo to a single webhook, which api-proxy receives at
 
 Manifest lives at [`github-app-manifest.json`](./github-app-manifest.json)
 (name `namche-review`, webhook
-`https://api.namche.ai/v1/webhooks/apps/github-app`, permissions
+`https://api.namche.net/v1/webhooks/apps/github-app`, permissions
 `contents:read`, `pull_requests:write`, `checks:write`, `issues:write`, events
 `pull_request`, `issue_comment`, `pull_request_review_comment`).
 
