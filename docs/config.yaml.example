@@ -68,7 +68,7 @@ apps:
   # owner/repo are derived from the payload, not the URL path.
   # Webhook URL (single, fixed):
   #   /v1/webhooks/apps/github-app
-  # Use this for the Tashi review App; keep the per-repo `github` route above
+  # Use this for the namche-review App; keep the per-repo `github` route above
   # for the existing notification webhooks — separate secrets, separate concerns.
   githubApp:
     enabled: true
@@ -82,4 +82,3 @@ apps:
   # Example URLs:
   #   /v1/webhooks/agents/tashi/webform/complaint
   #   /v1/webhooks/agents/tashi/webform/contact
-

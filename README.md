@@ -130,7 +130,7 @@ apps:
 ## GitHub App Forwarding
 
 For a GitHub App (single webhook URL across all installed repos), rather than a
-per-repo webhook. Used by the Tashi review App.
+per-repo webhook. Used by the `namche-review` App.
 
 Incoming endpoint:
 
@@ -141,7 +141,17 @@ Routing model:
 
 - one fixed URL for all repos; `owner`/`repo`/`repository` are derived from `payload.repository.full_name`
 - `installationId` from `payload.installation.id` is forwarded as metadata
-- all events forward to `apps.githubApp.targetAgent` on one `apps.githubApp.sessionKey`
+- supported PR lifecycle events forward automatically: `opened`, `reopened`,
+  `synchronize`, and `ready_for_review`
+- PR conversation and inline review comments forward only when an
+  `OWNER`, `MEMBER`, or `COLLABORATOR` uses `@namche-review review` or
+  `@namche-review re-review`
+- drafts, closed or review-App-authored PRs, review-App comments, ordinary
+  comments, and all unsupported events return `202` with `ignored: true`
+  without waking the agent; PRs from Claude, Codex, Dependabot, and other bots
+  remain eligible
+- eligible events forward to `apps.githubApp.targetAgent` on one
+  `apps.githubApp.sessionKey`
 
 Forwarded payload:
 

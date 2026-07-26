@@ -1,5 +1,5 @@
 {
-  "name": "tashi",
+  "name": "namche-review",
   "url": "https://tashi.namche.ai",
   "hook_attributes": {
     "url": "https://api.namche.ai/v1/webhooks/apps/github-app",
@@ -10,11 +10,12 @@
     "contents": "read",
     "metadata": "read",
     "pull_requests": "write",
-    "checks": "write"
+    "checks": "write",
+    "issues": "write"
   },
   "default_events": [
     "pull_request",
-    "pull_request_review",
-    "issue_comment"
+    "issue_comment",
+    "pull_request_review_comment"
   ]
 }

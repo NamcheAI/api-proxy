@@ -5,7 +5,8 @@
   "private": false,
   "scripts": {
     "dev": "node index.mjs",
-    "start": "node index.mjs"
+    "start": "node index.mjs",
+    "test": "node --test"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.4",

@@ -1,19 +1,23 @@
-# Tashi review App - setup
+# namche-review GitHub App - setup
 
-The `tashi` GitHub App turns pull-request events into review runs. GitHub sends
-all events for every installed repo to a single webhook, which api-proxy
-receives at `POST /v1/webhooks/apps/github-app` and forwards to the agent.
+The `namche-review` GitHub App turns pull-request events and explicit review
+mentions into cross-model review runs. GitHub sends subscribed events for every
+installed repo to a single webhook, which api-proxy receives at
+`POST /v1/webhooks/apps/github-app`.
 
 ## 1. Register the App
 
 Manifest lives at [`github-app-manifest.json`](./github-app-manifest.json)
-(name `tashi`, webhook `https://api.namche.ai/v1/webhooks/apps/github-app`,
-permissions `contents:read`, `pull_requests:write`, `checks:write`, events
-`pull_request`, `pull_request_review`, `issue_comment`).
+(name `namche-review`, webhook
+`https://api.namche.ai/v1/webhooks/apps/github-app`, permissions
+`contents:read`, `pull_requests:write`, `checks:write`, `issues:write`, events
+`pull_request`, `issue_comment`, `pull_request_review_comment`).
 
-Create it under the **NamcheAI org** (Settings -> Developer settings -> GitHub
-Apps -> New GitHub App). Either fill the form to match the manifest, or use the
-create-from-manifest flow and paste the JSON.
+The current production App was originally registered as `namche-ai-tashi`.
+Migrate that App in place after the review worker passes E2E validation so its
+existing installations remain intact. For a new environment, create the App
+under the **NamcheAI org** (Settings -> Developer settings -> GitHub Apps ->
+New GitHub App) and use the manifest values.
 
 ## 2. Collect the credentials (once)
 
@@ -50,10 +54,27 @@ the here-be-dragons-ai org. Installation grants the App access and yields an
 `installation_id` (also delivered in every webhook payload as
 `installation.id`).
 
-## 5. Acting as `tashi[bot]`
+## 5. Acting as `namche-review[bot]`
 
 To post reviews/comments/approvals the agent mints a short-lived installation
 access token from (App ID + private key -> App JWT -> installation token). All
-writes then appear as `tashi[bot]`, distinct from human `jodok` actions - which
-lets a single human account still submit real `Approve` / `Request changes`
-reviews (no self-approval conflict, no extra seat).
+writes then appear as `namche-review[bot]`, distinct from human `jodok` actions.
+
+## 6. Event behavior
+
+Automatic runs:
+
+- `pull_request.opened`
+- `pull_request.reopened`
+- `pull_request.synchronize`
+- `pull_request.ready_for_review`
+
+Explicit runs:
+
+- `issue_comment.created` on a PR with `@namche-review review` or
+  `@namche-review re-review`
+- `pull_request_review_comment.created` with the same commands
+- mention author must be `OWNER`, `MEMBER`, or `COLLABORATOR`
+
+Everything else is HMAC-verified and then answered with `202 ignored` without
+waking the reviewer.
