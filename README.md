@@ -145,7 +145,8 @@ Routing model:
   `synchronize`, and `ready_for_review`
 - PR conversation and inline review comments forward only when an
   `OWNER`, `MEMBER`, or `COLLABORATOR` uses `@namche-review review` or
-  `@namche-review re-review`
+  `@namche-review re-review`; a `CONTRIBUTOR` may use the same commands only
+  when they are also the pull request author
 - drafts, closed or review-App-authored PRs, review-App comments, ordinary
   comments, and all unsupported events return `202` with `ignored: true`
   without waking the agent; PRs from Claude, Codex, Dependabot, and other bots
