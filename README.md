@@ -1,6 +1,6 @@
 # api-proxy
 
-Hono service for `api.namche.ai`.
+Hono service behind the canonical `api.namche.net` endpoint.
 
 ## Purpose
 
@@ -130,7 +130,7 @@ apps:
 ## GitHub App Forwarding
 
 For a GitHub App (single webhook URL across all installed repos), rather than a
-per-repo webhook. Used by the Tashi review App.
+per-repo webhook. Used by the `namche-review` App.
 
 Incoming endpoint:
 
@@ -141,7 +141,17 @@ Routing model:
 
 - one fixed URL for all repos; `owner`/`repo`/`repository` are derived from `payload.repository.full_name`
 - `installationId` from `payload.installation.id` is forwarded as metadata
-- all events forward to `apps.githubApp.targetAgent` on one `apps.githubApp.sessionKey`
+- supported PR lifecycle events forward automatically: `opened`, `reopened`,
+  `synchronize`, and `ready_for_review`
+- PR conversation and inline review comments forward only when an
+  `OWNER`, `MEMBER`, or `COLLABORATOR` uses `@namche-review review` or
+  `@namche-review re-review`
+- drafts, closed or review-App-authored PRs, review-App comments, ordinary
+  comments, and all unsupported events return `202` with `ignored: true`
+  without waking the agent; PRs from Claude, Codex, Dependabot, and other bots
+  remain eligible
+- eligible events forward to `apps.githubApp.targetAgent` on one
+  `apps.githubApp.sessionKey`
 
 Forwarded payload:
 
@@ -243,7 +253,7 @@ gcloud pubsub topics create gmail-hook --project=${PROJECT_ID}
 # 3. Create one push subscription per configured Gmail subscription entry
 gcloud pubsub subscriptions create gmail-watch-${AGENT} \
   --topic=gmail-hook \
-  --push-endpoint="https://api.namche.ai/v1/webhooks/agents/${AGENT}/gmail/${SUBSCRIPTION}" \
+  --push-endpoint="https://api.namche.net/v1/webhooks/agents/${AGENT}/gmail/${SUBSCRIPTION}" \
   --push-auth-service-account="${SA}" \
   --project=${PROJECT_ID}
 ```
@@ -259,22 +269,16 @@ npm install
 CONFIG_PATH=./docs/config.yaml.example npm start
 ```
 
-## Deploy (manual, over the tailnet)
+## Deploy (NamcheAI/infra)
 
-The rp hosts are tailnet-only / behind office NAT and are not reachable
-from a GitHub runner (their public DNAT is 443/80 only, not SSH), so there
-is no push-CD for this service. Deploy manually, from an operator's
-machine connected to the tailnet:
+`NamcheAI/infra` is the deployment authority. Its `app_api_proxy` Ansible
+role checks out an immutable commit from this repository, runs
+`npm ci --omit=dev`, templates the runtime config, and manages the systemd
+service identically on both reverse proxies.
 
-```bash
-./deploy.sh              # deploys to rp-civ (production, default)
-./deploy.sh <host>       # deploys to another rp host, e.g. rp-hetzner
-```
-
-`deploy.sh` tars the working tree (excluding `.git`, `.github`,
-`node_modules`, `.env`) and pipes it over SSH to the target host, installs
-production dependencies, and restarts the `api-proxy` systemd unit.
-Requires SSH access as the `admin` user (has sudo) on the target host.
+Shipping a release therefore requires a reviewed infra PR that bumps
+`app_api_proxy_version`. Merging that PR applies the same commit to the complete
+RP inventory through the fleet pipeline. Do not deploy a single RP manually.
 
 It deploys to:
 
@@ -283,13 +287,14 @@ It deploys to:
 
 Nginx integration (from infra):
 
-- `api.namche.ai` proxies to `http://127.0.0.1:3000`
+- `api.namche.net` resolves to both RPs and proxies to `http://127.0.0.1:3000`
+- selected `api.namche.ai` paths remain compatibility routes during migration
 - proxy headers come from `/etc/nginx/proxy_params`
 
-Production files on the rp host (rp-civ today):
+Production files on both RP hosts:
 
-- `/etc/api-proxy/config.yaml` — managed by ansible (`roles/app_api_proxy`),
-  not by `deploy.sh`
+- `/etc/api-proxy/config.yaml` — managed by Ansible
+- `/home/deploy/apps/api-proxy` — pinned source checkout managed by Ansible
 
 Config contains secrets. Restrict file permissions accordingly.
 

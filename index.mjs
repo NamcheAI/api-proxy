@@ -16,6 +16,14 @@ const DEBUG_MESSAGE_PREVIEW_CHARS = 300;
 const GMAIL_FORWARD_PATH = '/gmail-pubsub';
 const DEFAULT_GMAIL_FORWARD_PORT = 8788;
 const GOOGLE_JWKS = createRemoteJWKSet(new URL('https://www.googleapis.com/oauth2/v3/certs'));
+const GITHUB_REVIEW_PR_ACTIONS = new Set(['opened', 'reopened', 'synchronize', 'ready_for_review']);
+const GITHUB_REVIEW_COMMENT_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+const GITHUB_REVIEW_MENTION = /(?:^|\s)@namche-review\s+(?:re-?review|review)\b/i;
+const GITHUB_REVIEW_APP_LOGINS = new Set([
+  'namche-review[bot]',
+  'namche-ai-tashi[bot]',
+  'tashi[bot]',
+]);
 
 const APP_DEFINITIONS = {
   krisp: {
@@ -163,9 +171,11 @@ app.all('*', (c) => {
   return c.json({ ok: true }, 200);
 });
 
-serve({ fetch: app.fetch, hostname: config.listen.host, port: config.listen.port }, () => {
-  log('info', `[api-proxy] listening on ${config.listen.host}:${config.listen.port} log_level=${configuredLogLevel} config=${configPath}`);
-});
+if (process.env.API_PROXY_NO_LISTEN !== '1') {
+  serve({ fetch: app.fetch, hostname: config.listen.host, port: config.listen.port }, () => {
+    log('info', `[api-proxy] listening on ${config.listen.host}:${config.listen.port} log_level=${configuredLogLevel} config=${configPath}`);
+  });
+}
 
 function loadConfig(path) {
   if (!existsSync(path)) {
@@ -788,6 +798,11 @@ async function handleGithubAppWebhook(c) {
   const repository = isObject ? String(parsedPayload.repository?.full_name ?? '').trim() : '';
   const [owner = '', repo = ''] = repository.split('/');
   const installationId = isObject ? (parsedPayload.installation?.id ?? null) : null;
+  const eventDecision = classifyGithubAppReviewEvent({
+    event,
+    action,
+    payload: parsedPayload,
+  });
 
   logDebugPayload('incoming_payload', {
     app: 'github-app',
@@ -797,10 +812,17 @@ async function handleGithubAppWebhook(c) {
     action,
     delivery,
     installationId,
+    eventEligible: eventDecision.eligible,
+    eventReason: eventDecision.reason,
     sessionKey: appConfig.sessionKey,
     bytes: body.byteLength,
     bodyPreview: previewText(rawMessage),
   });
+
+  if (!eventDecision.eligible) {
+    log('info', `[api-proxy] app=github-app repository=${repository || 'none'} event=${event} action=${action || 'none'} ignored=${eventDecision.reason} delivery=${delivery || 'none'}`);
+    return c.json({ ok: true, ignored: true, reason: eventDecision.reason }, 202);
+  }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FORWARD_TIMEOUT_MS);
@@ -848,6 +870,84 @@ async function handleGithubAppWebhook(c) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export function classifyGithubAppReviewEvent({ event, action, payload }) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { eligible: false, reason: 'invalid_payload' };
+  }
+
+  const sender = payload.sender && typeof payload.sender === 'object'
+    ? payload.sender
+    : {};
+  const senderLogin = String(sender.login ?? '');
+  if (isGithubReviewAppLogin(senderLogin)) {
+    return { eligible: false, reason: 'review_app_sender' };
+  }
+
+  if (event === 'pull_request') {
+    if (!GITHUB_REVIEW_PR_ACTIONS.has(action)) {
+      return { eligible: false, reason: 'unsupported_pr_action' };
+    }
+
+    const pullRequest = payload.pull_request && typeof payload.pull_request === 'object'
+      ? payload.pull_request
+      : {};
+    const author = pullRequest.user && typeof pullRequest.user === 'object'
+      ? pullRequest.user
+      : {};
+    const authorLogin = String(author.login ?? '');
+
+    if (pullRequest.draft) {
+      return { eligible: false, reason: 'draft' };
+    }
+    if (String(pullRequest.state ?? 'open') !== 'open') {
+      return { eligible: false, reason: 'closed' };
+    }
+    if (isGithubReviewAppLogin(authorLogin)) {
+      return { eligible: false, reason: 'review_app_authored_pr' };
+    }
+    return { eligible: true, reason: 'automatic_pr_event' };
+  }
+
+  if (event === 'issue_comment' && action === 'created') {
+    const issue = payload.issue && typeof payload.issue === 'object'
+      ? payload.issue
+      : {};
+    if (!issue.pull_request || typeof issue.pull_request !== 'object') {
+      return { eligible: false, reason: 'not_a_pull_request' };
+    }
+    return classifyGithubAppReviewMention(payload.comment);
+  }
+
+  if (event === 'pull_request_review_comment' && action === 'created') {
+    if (!payload.pull_request || typeof payload.pull_request !== 'object') {
+      return { eligible: false, reason: 'not_a_pull_request' };
+    }
+    return classifyGithubAppReviewMention(payload.comment);
+  }
+
+  return { eligible: false, reason: 'unsupported_event' };
+}
+
+function isGithubReviewAppLogin(login) {
+  return GITHUB_REVIEW_APP_LOGINS.has(String(login ?? '').toLowerCase());
+}
+
+function classifyGithubAppReviewMention(commentValue) {
+  const comment = commentValue && typeof commentValue === 'object'
+    ? commentValue
+    : {};
+  const association = String(comment.author_association ?? '');
+  if (!GITHUB_REVIEW_COMMENT_ASSOCIATIONS.has(association)) {
+    return { eligible: false, reason: 'unauthorized_commenter' };
+  }
+
+  const body = String(comment.body ?? '');
+  if (!GITHUB_REVIEW_MENTION.test(body)) {
+    return { eligible: false, reason: 'no_mention' };
+  }
+  return { eligible: true, reason: 'mention' };
 }
 
 async function handleWebformWebhook(c) {

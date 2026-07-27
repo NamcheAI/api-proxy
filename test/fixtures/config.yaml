@@ -1,0 +1,25 @@
+listen:
+  host: 127.0.0.1
+  port: 3000
+
+logLevel: error
+
+webform:
+  enabled: false
+
+WEBFORM_ALLOWED_ORIGINS:
+  - https://example.test
+
+agents:
+  tashi:
+    url: https://example.test
+    openclawHooksToken: Bearer test
+
+apps:
+  krisp:
+    enabled: false
+  githubApp:
+    enabled: true
+    targetAgent: tashi
+    webhookSecret: test-secret
+    sessionKey: hook:github-app:review
