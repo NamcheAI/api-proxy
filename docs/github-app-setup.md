@@ -74,7 +74,8 @@ Explicit runs:
 - `issue_comment.created` on a PR with `@namche-review review` or
   `@namche-review re-review`
 - `pull_request_review_comment.created` with the same commands
-- mention author must be `OWNER`, `MEMBER`, or `COLLABORATOR`
+- mention author must be `OWNER`, `MEMBER`, or `COLLABORATOR`; a
+  `CONTRIBUTOR` is accepted only when they are also the pull request author
 
 Everything else is HMAC-verified and then answered with `202 ignored` without
 waking the reviewer.

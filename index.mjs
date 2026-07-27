@@ -917,14 +917,17 @@ export function classifyGithubAppReviewEvent({ event, action, payload }) {
     if (!issue.pull_request || typeof issue.pull_request !== 'object') {
       return { eligible: false, reason: 'not_a_pull_request' };
     }
-    return classifyGithubAppReviewMention(payload.comment);
+    return classifyGithubAppReviewMention(payload, issue);
   }
 
   if (event === 'pull_request_review_comment' && action === 'created') {
-    if (!payload.pull_request || typeof payload.pull_request !== 'object') {
+    const pullRequest = payload.pull_request && typeof payload.pull_request === 'object'
+      ? payload.pull_request
+      : null;
+    if (!pullRequest) {
       return { eligible: false, reason: 'not_a_pull_request' };
     }
-    return classifyGithubAppReviewMention(payload.comment);
+    return classifyGithubAppReviewMention(payload, pullRequest);
   }
 
   return { eligible: false, reason: 'unsupported_event' };
@@ -934,12 +937,23 @@ function isGithubReviewAppLogin(login) {
   return GITHUB_REVIEW_APP_LOGINS.has(String(login ?? '').toLowerCase());
 }
 
-function classifyGithubAppReviewMention(commentValue) {
-  const comment = commentValue && typeof commentValue === 'object'
-    ? commentValue
+function classifyGithubAppReviewMention(payload, pullRequest) {
+  const comment = payload.comment && typeof payload.comment === 'object'
+    ? payload.comment
     : {};
   const association = String(comment.author_association ?? '');
-  if (!GITHUB_REVIEW_COMMENT_ASSOCIATIONS.has(association)) {
+  const sender = payload.sender && typeof payload.sender === 'object'
+    ? payload.sender
+    : {};
+  const author = pullRequest.user && typeof pullRequest.user === 'object'
+    ? pullRequest.user
+    : {};
+  const senderLogin = String(sender.login ?? '').toLowerCase();
+  const authorLogin = String(author.login ?? '').toLowerCase();
+  const isPullRequestAuthor = Boolean(senderLogin) && senderLogin === authorLogin;
+  const isAuthorizedContributor = association === 'CONTRIBUTOR' && isPullRequestAuthor;
+
+  if (!GITHUB_REVIEW_COMMENT_ASSOCIATIONS.has(association) && !isAuthorizedContributor) {
     return { eligible: false, reason: 'unauthorized_commenter' };
   }
 

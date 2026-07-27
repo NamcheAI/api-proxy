@@ -64,7 +64,7 @@ test('accepts authorized mentions in PR conversation comments', () => {
     action: 'created',
     payload: {
       sender: user,
-      issue: { pull_request: {} },
+      issue: { pull_request: {}, user },
       comment: {
         author_association: 'OWNER',
         body: 'please @namche-review re-review this.',
@@ -88,9 +88,57 @@ test('accepts authorized mentions in inline review comments', () => {
   }), { eligible: true, reason: 'mention' });
 });
 
+test('accepts contributor mentions only from the pull request author', () => {
+  const cases = [
+    {
+      event: 'issue_comment',
+      payload: {
+        sender: { ...user, login: 'Jodok' },
+        issue: { pull_request: {}, user },
+        comment: {
+          author_association: 'CONTRIBUTOR',
+          body: '@namche-review review',
+        },
+      },
+    },
+    {
+      event: 'pull_request_review_comment',
+      payload: {
+        sender: user,
+        pull_request: openPullRequest,
+        comment: {
+          author_association: 'CONTRIBUTOR',
+          body: '@namche-review re-review',
+        },
+      },
+    },
+  ];
+
+  for (const { event, payload } of cases) {
+    assert.deepEqual(classifyGithubAppReviewEvent({
+      event,
+      action: 'created',
+      payload,
+    }), { eligible: true, reason: 'mention' });
+  }
+
+  assert.deepEqual(classifyGithubAppReviewEvent({
+    event: 'issue_comment',
+    action: 'created',
+    payload: {
+      sender: { login: 'unrelated-contributor', type: 'User' },
+      issue: { pull_request: {}, user },
+      comment: {
+        author_association: 'CONTRIBUTOR',
+        body: '@namche-review review',
+      },
+    },
+  }), { eligible: false, reason: 'unauthorized_commenter' });
+});
+
 test('ignores ordinary, unauthorized, non-PR, and bot comments', () => {
   const base = {
-    issue: { pull_request: {} },
+    issue: { pull_request: {}, user },
     sender: user,
     comment: {
       author_association: 'COLLABORATOR',
