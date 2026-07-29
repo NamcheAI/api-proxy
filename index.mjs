@@ -42,6 +42,9 @@ const APP_DEFINITIONS = {
   gmail: {
     path: '/v1/webhooks/agents/:agentId/gmail/:subscription',
   },
+  todoist: {
+    path: '/v1/webhooks/agents/:agentId/todoist/:accountId',
+  },
 };
 
 // webform route — generic, formId from URL path
@@ -131,6 +134,7 @@ app.get('/healthz', (c) => {
   if (isAppRouteEnabled('githubApp')) routes.push(APP_DEFINITIONS.githubApp.path);
   if (config.webform.enabled) routes.push(WEBFORM_PATH);
   if (isAppRouteEnabled('gmail')) routes.push(APP_DEFINITIONS.gmail.path);
+  if (isAppRouteEnabled('todoist')) routes.push(APP_DEFINITIONS.todoist.path);
 
   return c.json({
     ok: true,
@@ -144,6 +148,7 @@ app.get('/healthz', (c) => {
       githubApp: isAppRouteEnabled('githubApp'),
       webform: config.webform.enabled,
       gmail: isAppRouteEnabled('gmail'),
+      todoist: isAppRouteEnabled('todoist'),
     },
     agents: Object.keys(config.agents),
     webformAllowedOrigins: config.webformAllowedOrigins,
@@ -156,6 +161,7 @@ if (isAppRouteEnabled('github')) app.post(APP_DEFINITIONS.github.path, handleGit
 if (isAppRouteEnabled('githubApp')) app.post(APP_DEFINITIONS.githubApp.path, handleGithubAppWebhook);
 if (config.webform.enabled) app.post(WEBFORM_PATH, handleWebformWebhook);
 if (isAppRouteEnabled('gmail')) app.post(APP_DEFINITIONS.gmail.path, handleGmailWebhook);
+if (isAppRouteEnabled('todoist')) app.post(APP_DEFINITIONS.todoist.path, handleTodoistWebhook);
 
 app.post('/v1/webhooks/apps/*', (c) => {
   log('warn', `[api-proxy] invalid_path family=apps path=${new URL(c.req.url).pathname}`);
@@ -431,6 +437,72 @@ function normalizeConfig(raw) {
       }
 
       normalizedApps.githubApp = { ...appDef, enabled: true, targetAgent, webhookSecret, sessionKey };
+      continue;
+    }
+
+    // todoist is optional — only active when present in config
+    if (appId === 'todoist') {
+      if (!appConfig) continue;
+      if (typeof appConfig !== 'object') {
+        throw new Error(`[api-proxy] App 'todoist' config must be an object`);
+      }
+
+      const enabled = appConfig.enabled ?? true;
+      if (typeof enabled !== 'boolean') {
+        throw new Error(`[api-proxy] App 'todoist' enabled must be a boolean`);
+      }
+      if (!enabled) {
+        normalizedApps.todoist = { ...appDef, enabled: false };
+        continue;
+      }
+
+      const agentsMap = appConfig.agents;
+      if (!agentsMap || typeof agentsMap !== 'object' || Array.isArray(agentsMap)) {
+        throw new Error(`[api-proxy] App 'todoist' agents must be an object`);
+      }
+
+      const normalizedTodoistAgents = {};
+      for (const [todoistAgentId, entry] of Object.entries(agentsMap)) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+          throw new Error(`[api-proxy] App 'todoist' agent '${todoistAgentId}' config must be an object`);
+        }
+        if (!normalizedAgents[todoistAgentId]) {
+          throw new Error(`[api-proxy] App 'todoist' references unknown agent '${todoistAgentId}'`);
+        }
+
+        const accounts = entry.accounts;
+        if (!accounts || typeof accounts !== 'object' || Array.isArray(accounts)) {
+          throw new Error(`[api-proxy] App 'todoist' agent '${todoistAgentId}' requires an 'accounts' map`);
+        }
+
+        const normalizedAccounts = {};
+        for (const [accountId, accountEntry] of Object.entries(accounts)) {
+          if (!accountEntry || typeof accountEntry !== 'object' || Array.isArray(accountEntry)) {
+            throw new Error(`[api-proxy] App 'todoist' account '${accountId}' config must be an object`);
+          }
+
+          // Signs the X-Todoist-Hmac-SHA256 header. This is the registered
+          // Todoist app's client secret, not a personal API token.
+          const clientSecret = String(accountEntry.clientSecret ?? '').trim();
+          if (!clientSecret) {
+            throw new Error(`[api-proxy] App 'todoist' account '${accountId}' missing clientSecret`);
+          }
+
+          normalizedAccounts[accountId] = { clientSecret };
+        }
+
+        if (Object.keys(normalizedAccounts).length === 0) {
+          throw new Error(`[api-proxy] App 'todoist' agent '${todoistAgentId}' requires at least one account entry`);
+        }
+
+        normalizedTodoistAgents[todoistAgentId] = { accounts: normalizedAccounts };
+      }
+
+      if (Object.keys(normalizedTodoistAgents).length === 0) {
+        throw new Error(`[api-proxy] App 'todoist' agents requires at least one agent entry`);
+      }
+
+      normalizedApps.todoist = { ...appDef, enabled: true, agents: normalizedTodoistAgents };
       continue;
     }
 
@@ -1015,6 +1087,114 @@ async function handleWebformWebhook(c) {
     const code = error?.name === 'AbortError' ? 504 : 502;
     const messageText = error instanceof Error ? error.message : 'forward request failed';
     log('error', `[api-proxy] app=webform form=${formId} agent=${agentId} error=${messageText}`);
+    return c.json({ ok: false, error: messageText }, code);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Todoist signs the raw body with the registered app's client secret and sends
+// the digest base64-encoded (GitHub uses hex, hence a separate verifier).
+export function verifyTodoistSignature(rawBody, signatureHeader, clientSecret) {
+  const provided = String(signatureHeader ?? '').trim();
+  if (!/^[A-Za-z0-9+/]{43}=$/.test(provided)) return false;
+
+  const expected = createHmac('sha256', clientSecret).update(rawBody).digest('base64');
+  const providedBuffer = Buffer.from(provided, 'base64');
+  const expectedBuffer = Buffer.from(expected, 'base64');
+
+  if (providedBuffer.length !== expectedBuffer.length) return false;
+  return timingSafeEqual(providedBuffer, expectedBuffer);
+}
+
+async function handleTodoistWebhook(c) {
+  const path = new URL(c.req.url).pathname;
+  const agentId = String(c.req.param('agentId') ?? '').trim();
+  const accountId = String(c.req.param('accountId') ?? '').trim();
+  const agentConfig = config.agents[agentId];
+  const accountConfig = config.apps.todoist?.agents?.[agentId]?.accounts?.[accountId];
+
+  if (!agentConfig) {
+    log('warn', `[api-proxy] unknown_agent path=${path} agent=${agentId || 'none'}`);
+    return c.json({ ok: false, error: 'unknown_agent' }, 404);
+  }
+
+  if (!accountConfig) {
+    log('warn', `[api-proxy] unknown_todoist_account path=${path} agent=${agentId} account=${accountId || 'none'}`);
+    return c.json({ ok: false, error: 'unknown_account' }, 404);
+  }
+
+  const body = await c.req.arrayBuffer();
+  const rawBody = Buffer.from(body);
+
+  if (!verifyTodoistSignature(rawBody, c.req.header('x-todoist-hmac-sha256'), accountConfig.clientSecret)) {
+    log('warn', `[api-proxy] invalid_signature app=todoist agent=${agentId} account=${accountId}`);
+    return c.json({ ok: false, error: 'invalid_signature' }, 401);
+  }
+
+  const rawText = toUtf8(rawBody);
+  let parsed;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch {
+    log('warn', `[api-proxy] invalid_json app=todoist agent=${agentId} account=${accountId}`);
+    return c.json({ ok: false, error: 'invalid_json' }, 400);
+  }
+
+  const event = String(parsed?.event_name ?? '').trim() || 'unknown';
+  // Re-deliveries reuse the delivery id, so the agent dedupes on it.
+  const delivery = String(c.req.header('x-todoist-delivery-id') ?? '').trim();
+
+  logDebugPayload('incoming_payload', {
+    app: 'todoist',
+    path,
+    agentId,
+    accountId,
+    event,
+    delivery,
+    bytes: rawBody.byteLength,
+    bodyPreview: previewText(rawText),
+  });
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FORWARD_TIMEOUT_MS);
+
+  try {
+    const payload = JSON.stringify({
+      name: `todoist:${event}`,
+      message: JSON.stringify({
+        source: 'todoist',
+        account: accountId,
+        event,
+        delivery,
+        payload: parsed,
+      }),
+      sessionKey: `hook:todoist:${accountId}`,
+      wakeMode: 'next-heartbeat',
+      deliver: false,
+    });
+
+    logDebugPayload('forward_payload', {
+      app: 'todoist',
+      ...buildForwardEnvelopeDebug(payload),
+    });
+
+    const upstream = await forwardToAgent(agentConfig, payload, controller.signal);
+    log('info', `[api-proxy] app=todoist agent=${agentId} account=${accountId} event=${event} delivery=${delivery || 'none'} status=${upstream.status} bytes=${rawBody.byteLength}`);
+
+    // Todoist retries anything that is not a 200 (15 min apart, 3 attempts).
+    // The agent answers 202, so map upstream success to 200 and let a genuine
+    // upstream failure surface as 502 to earn a retry.
+    if (upstream.status >= 200 && upstream.status < 300) {
+      return c.json({ ok: true }, 200);
+    }
+
+    log('warn', `[api-proxy] app=todoist upstream_rejected agent=${agentId} account=${accountId} status=${upstream.status}`);
+    return c.json({ ok: false, error: 'upstream_rejected' }, 502);
+  } catch (error) {
+    const code = error?.name === 'AbortError' ? 504 : 502;
+    const messageText = error instanceof Error ? error.message : 'forward request failed';
+    log('error', `[api-proxy] app=todoist agent=${agentId} account=${accountId} event=${event} error=${messageText}`);
     return c.json({ ok: false, error: messageText }, code);
   } finally {
     clearTimeout(timeout);

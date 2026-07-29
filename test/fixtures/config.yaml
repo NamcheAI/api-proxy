@@ -23,3 +23,10 @@ apps:
     targetAgent: tashi
     webhookSecret: test-secret
     sessionKey: hook:github-app:review
+  todoist:
+    enabled: true
+    agents:
+      tashi:
+        accounts:
+          jodok:
+            clientSecret: test-todoist-client-secret

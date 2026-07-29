@@ -15,6 +15,7 @@ Hono service behind the canonical `api.namche.net` endpoint.
 - `POST /v1/webhooks/apps/github-app` (optional, single GitHub App webhook; owner/repo from payload)
 - `POST /v1/webhooks/agents/:agentId/webform/:formId`
 - `POST /v1/webhooks/agents/:agentId/gmail/:subscription` (optional, Gmail Pub/Sub push)
+- `POST /v1/webhooks/agents/:agentId/todoist/:accountId` (optional, Todoist app webhooks)
 
 ## Configuration
 
@@ -35,7 +36,7 @@ Current config shape:
     - `url`
     - `openclawHooksToken`
 - `apps`:
-  - currently `krisp`, optional `github`, optional `gmail`
+  - currently `krisp`, optional `github`, optional `gmail`, optional `todoist`
   - defines:
     - `krisp.agents.<agentId>.incomingAuthorization` (required per-agent auth by URL `:agentId`)
     - `krisp.enabled` (optional boolean route toggle, default `true`)
@@ -47,6 +48,8 @@ Current config shape:
     - `agents.<agentId>.apps.gmail.subscriptions.<subscription>.oidcEmail` (GCP SA expected in OIDC JWT)
     - `agents.<agentId>.apps.gmail.subscriptions.<subscription>.token` (required Authorization token for forwarding to `gog gmail watch serve`)
     - `agents.<agentId>.apps.gmail.subscriptions.<subscription>.forwardPort` (optional port for `gog gmail watch serve` on that agent host, defaults to `8788`)
+    - `todoist.enabled` (optional boolean route toggle, default `true`)
+    - `todoist.agents.<agentId>.accounts.<accountId>.clientSecret` (registered Todoist app's client secret, signs the incoming HMAC)
 
 See:
 
@@ -60,6 +63,7 @@ Route toggle behavior:
 - omit `agents.<agentId>.apps.gmail` to disable Gmail for that agent entirely
 - set `agents.<agentId>.apps.gmail.enabled: false` to keep config in place but disable Gmail for that agent
 - if no agent has Gmail enabled, the Gmail route is disabled
+- omit `apps.todoist` (or set `apps.todoist.enabled: false`) to disable the Todoist route
 
 ## Krisp Forwarding
 
@@ -262,6 +266,65 @@ gcloud pubsub subscriptions create gmail-watch-${AGENT} \
 Set `oidcEmail` per Gmail subscription to `pubsub-push@<PROJECT_ID>.iam.gserviceaccount.com`.
 Set `token` per Gmail subscription to the shared token expected by the local watcher via `x-gog-token`.
 Set `forwardPort` only when the local `gog gmail watch serve` port is not `8788`. This hotfix keeps OIDC verification at api-proxy ingress, fixes the mistaken ingress token check, and fixes the watcher-side audience mismatch by not forwarding the Pub/Sub JWT upstream.
+
+## Todoist Forwarding
+
+Optional route — active when `apps.todoist` exists and `apps.todoist.enabled` is not `false`.
+
+Todoist webhooks belong to an app registered in the
+[App Management Console](https://app.todoist.com/app/settings/integrations/app-management),
+not to a personal API token. The app's **client secret** signs every delivery, so
+that secret — not the account's `api_key` — is what this proxy needs. One account
+per registered app; `:accountId` keeps a second account (its own app, its own
+secret) addressable on the same agent.
+
+Incoming endpoint:
+
+- `POST /v1/webhooks/agents/:agentId/todoist/:accountId`
+- auth: `X-Todoist-Hmac-SHA256` — base64 HMAC-SHA256 of the raw body, keyed with
+  `apps.todoist.agents.<agentId>.accounts.<accountId>.clientSecret`
+- `:agentId` and `:accountId` must both match the config
+
+Forwarded payload:
+
+```json
+{
+  "name": "todoist:<event_name>",
+  "message": "{\"source\":\"todoist\",\"account\":\"<accountId>\",\"event\":\"<event_name>\",\"delivery\":\"<x-todoist-delivery-id>\",\"payload\":{...}}",
+  "sessionKey": "hook:todoist:<accountId>",
+  "wakeMode": "next-heartbeat",
+  "deliver": false
+}
+```
+
+Response contract — Todoist treats any non-`200` as a failed delivery and retries
+after 15 minutes, at most three times, reusing the same `X-Todoist-Delivery-ID`.
+So this route does not pass the upstream status through the way the other routes
+do: a `2xx` from the agent becomes a plain `200`, and a genuine upstream failure
+returns `502` to earn the retry. The delivery id is forwarded so the agent can
+dedupe re-deliveries.
+
+Which events arrive is chosen in the App Management Console, not here — this
+route dispatches whatever the app is subscribed to.
+
+Config:
+
+```yaml
+apps:
+  todoist:
+    enabled: true
+    agents:
+      tashi:
+        accounts:
+          jodok:
+            clientSecret: <TODOIST_CLIENT_SECRET>
+```
+
+Webhook callback URL to register in the console:
+
+```text
+https://api.namche.net/v1/webhooks/agents/tashi/todoist/jodok
+```
 
 ## Local Run
 
