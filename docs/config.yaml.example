@@ -82,3 +82,19 @@ apps:
   # Example URLs:
   #   /v1/webhooks/agents/tashi/webform/complaint
   #   /v1/webhooks/agents/tashi/webform/contact
+
+  # todoist is optional — omit to disable the route
+  # Webhooks belong to an app registered at
+  #   https://app.todoist.com/app/settings/integrations/app-management
+  # clientSecret is that app's client secret (it signs X-Todoist-Hmac-SHA256).
+  # It is NOT the account's personal api_key — a personal token cannot register
+  # a webhook. Which events arrive is chosen in the console, not here.
+  # Callback URL to register:
+  #   https://api.namche.net/v1/webhooks/agents/tashi/todoist/jodok
+  todoist:
+    enabled: true
+    agents:
+      tashi:
+        accounts:
+          jodok:
+            clientSecret: <TODOIST_CLIENT_SECRET>
