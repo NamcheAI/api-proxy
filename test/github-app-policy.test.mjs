@@ -24,6 +24,35 @@ test('accepts supported pull request lifecycle events', () => {
   }
 });
 
+test('accepts only the review App completed check run', () => {
+  const completion = {
+    sender: { login: 'namche-review[bot]', type: 'Bot' },
+    check_run: {
+      name: 'namche-review',
+      external_id: 'namche-review:abc123',
+      app: { slug: 'namche-review' },
+    },
+  };
+  assert.deepEqual(classifyGithubAppReviewEvent({
+    event: 'check_run',
+    action: 'completed',
+    payload: completion,
+  }), { eligible: true, reason: 'review_completed' });
+
+  for (const [payload, action, reason] of [
+    [completion, 'created', 'unsupported_check_run_action'],
+    [{ ...completion, check_run: { ...completion.check_run, name: 'test' } }, 'completed', 'unrelated_check_run'],
+    [{ ...completion, check_run: { ...completion.check_run, external_id: 'foreign' } }, 'completed', 'unrelated_check_run'],
+    [{ ...completion, check_run: { ...completion.check_run, app: { slug: 'foreign' } } }, 'completed', 'unrelated_check_run'],
+  ]) {
+    assert.deepEqual(classifyGithubAppReviewEvent({
+      event: 'check_run',
+      action,
+      payload,
+    }), { eligible: false, reason });
+  }
+});
+
 test('ignores drafts, review-App PRs, closed PRs, and unsupported actions', () => {
   const cases = [
     [{ sender: user, pull_request: { ...openPullRequest, draft: true } }, 'opened', 'draft'],
