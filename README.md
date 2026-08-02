@@ -151,6 +151,8 @@ Routing model:
   `OWNER`, `MEMBER`, or `COLLABORATOR` uses `@namche-review review` or
   `@namche-review re-review`; a `CONTRIBUTOR` may use the same commands only
   when they are also the pull request author
+- the `namche-review` App's own completed `namche-review` check run forwards as
+  the review-completion signal; unrelated and non-terminal checks are ignored
 - drafts, closed or review-App-authored PRs, review-App comments, ordinary
   comments, and all unsupported events return `202` with `ignored: true`
   without waking the agent; PRs from Claude, Codex, Dependabot, and other bots

@@ -70,6 +70,8 @@ apps:
   #   /v1/webhooks/apps/github-app
   # Use this for the namche-review App; keep the per-repo `github` route above
   # for the existing notification webhooks — separate secrets, separate concerns.
+  # Its own completed namche-review check is also forwarded so the dispatcher
+  # can publish the authenticated review-completion event stream.
   githubApp:
     enabled: true
     targetAgent: tashi

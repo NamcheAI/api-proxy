@@ -949,6 +949,30 @@ export function classifyGithubAppReviewEvent({ event, action, payload }) {
     return { eligible: false, reason: 'invalid_payload' };
   }
 
+  // The App writes this check from its executor. GitHub Apps with Checks write
+  // permission receive check_run webhooks automatically, which gives the
+  // dispatcher a completion signal without putting a callback credential into
+  // the executor's persisted agent session. Accept only this App's own terminal
+  // result; every other check stays at the edge.
+  if (event === 'check_run') {
+    if (action !== 'completed') {
+      return { eligible: false, reason: 'unsupported_check_run_action' };
+    }
+    const checkRun = payload.check_run && typeof payload.check_run === 'object'
+      ? payload.check_run
+      : {};
+    const appSlug = String(checkRun.app?.slug ?? '');
+    const externalId = String(checkRun.external_id ?? '');
+    if (
+      checkRun.name !== 'namche-review'
+      || appSlug !== 'namche-review'
+      || !externalId.startsWith('namche-review:')
+    ) {
+      return { eligible: false, reason: 'unrelated_check_run' };
+    }
+    return { eligible: true, reason: 'review_completed' };
+  }
+
   const sender = payload.sender && typeof payload.sender === 'object'
     ? payload.sender
     : {};
