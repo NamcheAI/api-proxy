@@ -18,11 +18,6 @@ agents:
 apps:
   krisp:
     enabled: false
-  githubApp:
-    enabled: true
-    targetAgent: tashi
-    webhookSecret: test-secret
-    sessionKey: hook:github-app:review
   todoist:
     enabled: true
     agents:
