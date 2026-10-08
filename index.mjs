@@ -16,15 +16,6 @@ const DEBUG_MESSAGE_PREVIEW_CHARS = 300;
 const GMAIL_FORWARD_PATH = '/gmail-pubsub';
 const DEFAULT_GMAIL_FORWARD_PORT = 8788;
 const GOOGLE_JWKS = createRemoteJWKSet(new URL('https://www.googleapis.com/oauth2/v3/certs'));
-const GITHUB_REVIEW_PR_ACTIONS = new Set(['opened', 'reopened', 'synchronize', 'ready_for_review']);
-const GITHUB_REVIEW_COMMENT_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
-const GITHUB_REVIEW_MENTION = /(?:^|\s)@namche-review\s+(?:re-?review|review)\b/i;
-const GITHUB_REVIEW_APP_LOGINS = new Set([
-  'namche-review[bot]',
-  'namche-ai-tashi[bot]',
-  'tashi[bot]',
-]);
-
 const APP_DEFINITIONS = {
   krisp: {
     path: '/v1/webhooks/agents/:agentId/notetaker/:notetakerId',
@@ -33,11 +24,6 @@ const APP_DEFINITIONS = {
   },
   github: {
     path: '/v1/webhooks/apps/github/:owner/:repo',
-  },
-  // GitHub App: single fixed webhook URL for all installations/repos.
-  // owner/repo are derived from the payload, not the path.
-  githubApp: {
-    path: '/v1/webhooks/apps/github-app',
   },
   gmail: {
     path: '/v1/webhooks/agents/:agentId/gmail/:subscription',
@@ -131,7 +117,6 @@ app.get('/healthz', (c) => {
   const routes = [];
   if (isAppRouteEnabled('krisp')) routes.push(APP_DEFINITIONS.krisp.path);
   if (isAppRouteEnabled('github')) routes.push(APP_DEFINITIONS.github.path);
-  if (isAppRouteEnabled('githubApp')) routes.push(APP_DEFINITIONS.githubApp.path);
   if (config.webform.enabled) routes.push(WEBFORM_PATH);
   if (isAppRouteEnabled('gmail')) routes.push(APP_DEFINITIONS.gmail.path);
   if (isAppRouteEnabled('todoist')) routes.push(APP_DEFINITIONS.todoist.path);
@@ -145,7 +130,6 @@ app.get('/healthz', (c) => {
     routeToggles: {
       krisp: isAppRouteEnabled('krisp'),
       github: isAppRouteEnabled('github'),
-      githubApp: isAppRouteEnabled('githubApp'),
       webform: config.webform.enabled,
       gmail: isAppRouteEnabled('gmail'),
       todoist: isAppRouteEnabled('todoist'),
@@ -158,7 +142,6 @@ app.get('/healthz', (c) => {
 
 if (isAppRouteEnabled('krisp')) app.post(APP_DEFINITIONS.krisp.path, handleKrispWebhook);
 if (isAppRouteEnabled('github')) app.post(APP_DEFINITIONS.github.path, handleGithubWebhook);
-if (isAppRouteEnabled('githubApp')) app.post(APP_DEFINITIONS.githubApp.path, handleGithubAppWebhook);
 if (config.webform.enabled) app.post(WEBFORM_PATH, handleWebformWebhook);
 if (isAppRouteEnabled('gmail')) app.post(APP_DEFINITIONS.gmail.path, handleGmailWebhook);
 if (isAppRouteEnabled('todoist')) app.post(APP_DEFINITIONS.todoist.path, handleTodoistWebhook);
@@ -405,40 +388,6 @@ function normalizeConfig(raw) {
       continue;
     }
 
-    // github-app is optional — only active when present in config
-    if (appId === 'githubApp') {
-      if (!appConfig) continue;
-      if (typeof appConfig !== 'object') {
-        throw new Error(`[api-proxy] App 'githubApp' config must be an object`);
-      }
-
-      const enabled = appConfig.enabled ?? true;
-      if (typeof enabled !== 'boolean') {
-        throw new Error(`[api-proxy] App 'githubApp' enabled must be a boolean`);
-      }
-      if (!enabled) {
-        normalizedApps.githubApp = { ...appDef, enabled: false };
-        continue;
-      }
-
-      const targetAgent = String(appConfig.targetAgent ?? '').trim();
-      if (!targetAgent) throw new Error(`[api-proxy] App 'githubApp' missing targetAgent`);
-      if (!normalizedAgents[targetAgent]) {
-        throw new Error(`[api-proxy] App 'githubApp' references unknown agent '${targetAgent}'`);
-      }
-
-      const webhookSecret = String(appConfig.webhookSecret ?? '').trim();
-      const sessionKey = String(appConfig.sessionKey ?? '').trim();
-      if (!webhookSecret) {
-        throw new Error(`[api-proxy] App 'githubApp' missing webhookSecret`);
-      }
-      if (!sessionKey) {
-        throw new Error(`[api-proxy] App 'githubApp' missing sessionKey`);
-      }
-
-      normalizedApps.githubApp = { ...appDef, enabled: true, targetAgent, webhookSecret, sessionKey };
-      continue;
-    }
 
     // todoist is optional — only active when present in config
     if (appId === 'todoist') {
@@ -834,230 +783,6 @@ async function handleGithubWebhook(c) {
   } finally {
     clearTimeout(timeout);
   }
-}
-
-async function handleGithubAppWebhook(c) {
-  const path = new URL(c.req.url).pathname;
-  const appConfig = config.apps.githubApp;
-
-  if (!appConfig) {
-    log('warn', `[api-proxy] github_app_not_configured path=${path}`);
-    return c.json({ ok: false, error: 'not_configured' }, 404);
-  }
-
-  const body = await c.req.arrayBuffer();
-  const rawBody = Buffer.from(body);
-  const signatureHeader = c.req.header('x-hub-signature-256');
-
-  if (!verifyGithubSignature(rawBody, signatureHeader, appConfig.webhookSecret)) {
-    log('warn', `[api-proxy] unauthorized app=github-app reason=signature_invalid`);
-    return c.json({ ok: false, error: 'unauthorized' }, 401);
-  }
-
-  const event = String(c.req.header('x-github-event') ?? '').trim() || 'unknown';
-  const delivery = String(c.req.header('x-github-delivery') ?? '').trim();
-  const rawMessage = toUtf8(rawBody);
-
-  let parsedPayload;
-  try {
-    parsedPayload = JSON.parse(rawMessage);
-  } catch {
-    parsedPayload = rawMessage;
-  }
-
-  const isObject = typeof parsedPayload === 'object' && parsedPayload !== null;
-  const action = isObject ? String(parsedPayload.action ?? '').trim() : '';
-  const repository = isObject ? String(parsedPayload.repository?.full_name ?? '').trim() : '';
-  const [owner = '', repo = ''] = repository.split('/');
-  const installationId = isObject ? (parsedPayload.installation?.id ?? null) : null;
-  const eventDecision = classifyGithubAppReviewEvent({
-    event,
-    action,
-    payload: parsedPayload,
-  });
-
-  logDebugPayload('incoming_payload', {
-    app: 'github-app',
-    path,
-    repository,
-    event,
-    action,
-    delivery,
-    installationId,
-    eventEligible: eventDecision.eligible,
-    eventReason: eventDecision.reason,
-    sessionKey: appConfig.sessionKey,
-    bytes: body.byteLength,
-    bodyPreview: previewText(rawMessage),
-  });
-
-  if (!eventDecision.eligible) {
-    log('info', `[api-proxy] app=github-app repository=${repository || 'none'} event=${event} action=${action || 'none'} ignored=${eventDecision.reason} delivery=${delivery || 'none'}`);
-    return c.json({ ok: true, ignored: true, reason: eventDecision.reason }, 202);
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FORWARD_TIMEOUT_MS);
-
-  try {
-    const message = JSON.stringify({
-      source: 'github-app',
-      owner,
-      repo,
-      repository,
-      event,
-      action,
-      delivery,
-      installationId,
-      payload: parsedPayload,
-    });
-
-    const payload = JSON.stringify({
-      name: `github-app:${repository || 'unknown'}`,
-      message,
-      sessionKey: appConfig.sessionKey,
-      wakeMode: 'now',
-      deliver: true,
-    });
-
-    logDebugPayload('forward_payload', {
-      app: 'github-app',
-      repository,
-      event,
-      action,
-      targetAgent: appConfig.targetAgent,
-      ...buildForwardEnvelopeDebug(payload),
-    });
-
-    const agentConfig = config.agents[appConfig.targetAgent];
-    const upstream = await forwardToAgent(agentConfig, payload, controller.signal);
-
-    log('info', `[api-proxy] app=github-app repository=${repository || 'none'} event=${event} action=${action || 'none'} agent=${appConfig.targetAgent} sessionKey=${appConfig.sessionKey} status=${upstream.status} bytes=${body.byteLength}`);
-    return upstream;
-  } catch (error) {
-    const code = error?.name === 'AbortError' ? 504 : 502;
-    const messageText = error instanceof Error ? error.message : 'forward request failed';
-    log('error', `[api-proxy] app=github-app repository=${repository || 'none'} event=${event} error=${messageText}`);
-    return c.json({ ok: false, error: messageText }, code);
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-export function classifyGithubAppReviewEvent({ event, action, payload }) {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return { eligible: false, reason: 'invalid_payload' };
-  }
-
-  // The App writes this check from its executor. GitHub Apps with Checks write
-  // permission receive check_run webhooks automatically, which gives the
-  // dispatcher a completion signal without putting a callback credential into
-  // the executor's persisted agent session. Accept only this App's own terminal
-  // result; every other check stays at the edge.
-  if (event === 'check_run') {
-    if (action !== 'completed') {
-      return { eligible: false, reason: 'unsupported_check_run_action' };
-    }
-    const checkRun = payload.check_run && typeof payload.check_run === 'object'
-      ? payload.check_run
-      : {};
-    const appSlug = String(checkRun.app?.slug ?? '');
-    const externalId = String(checkRun.external_id ?? '');
-    if (
-      checkRun.name !== 'namche-review'
-      || appSlug !== 'namche-review'
-      || !externalId.startsWith('namche-review:')
-    ) {
-      return { eligible: false, reason: 'unrelated_check_run' };
-    }
-    return { eligible: true, reason: 'review_completed' };
-  }
-
-  const sender = payload.sender && typeof payload.sender === 'object'
-    ? payload.sender
-    : {};
-  const senderLogin = String(sender.login ?? '');
-  if (isGithubReviewAppLogin(senderLogin)) {
-    return { eligible: false, reason: 'review_app_sender' };
-  }
-
-  if (event === 'pull_request') {
-    if (!GITHUB_REVIEW_PR_ACTIONS.has(action)) {
-      return { eligible: false, reason: 'unsupported_pr_action' };
-    }
-
-    const pullRequest = payload.pull_request && typeof payload.pull_request === 'object'
-      ? payload.pull_request
-      : {};
-    const author = pullRequest.user && typeof pullRequest.user === 'object'
-      ? pullRequest.user
-      : {};
-    const authorLogin = String(author.login ?? '');
-
-    if (pullRequest.draft) {
-      return { eligible: false, reason: 'draft' };
-    }
-    if (String(pullRequest.state ?? 'open') !== 'open') {
-      return { eligible: false, reason: 'closed' };
-    }
-    if (isGithubReviewAppLogin(authorLogin)) {
-      return { eligible: false, reason: 'review_app_authored_pr' };
-    }
-    return { eligible: true, reason: 'automatic_pr_event' };
-  }
-
-  if (event === 'issue_comment' && action === 'created') {
-    const issue = payload.issue && typeof payload.issue === 'object'
-      ? payload.issue
-      : {};
-    if (!issue.pull_request || typeof issue.pull_request !== 'object') {
-      return { eligible: false, reason: 'not_a_pull_request' };
-    }
-    return classifyGithubAppReviewMention(payload, issue);
-  }
-
-  if (event === 'pull_request_review_comment' && action === 'created') {
-    const pullRequest = payload.pull_request && typeof payload.pull_request === 'object'
-      ? payload.pull_request
-      : null;
-    if (!pullRequest) {
-      return { eligible: false, reason: 'not_a_pull_request' };
-    }
-    return classifyGithubAppReviewMention(payload, pullRequest);
-  }
-
-  return { eligible: false, reason: 'unsupported_event' };
-}
-
-function isGithubReviewAppLogin(login) {
-  return GITHUB_REVIEW_APP_LOGINS.has(String(login ?? '').toLowerCase());
-}
-
-function classifyGithubAppReviewMention(payload, pullRequest) {
-  const comment = payload.comment && typeof payload.comment === 'object'
-    ? payload.comment
-    : {};
-  const association = String(comment.author_association ?? '');
-  const sender = payload.sender && typeof payload.sender === 'object'
-    ? payload.sender
-    : {};
-  const author = pullRequest.user && typeof pullRequest.user === 'object'
-    ? pullRequest.user
-    : {};
-  const senderLogin = String(sender.login ?? '').toLowerCase();
-  const authorLogin = String(author.login ?? '').toLowerCase();
-  const isPullRequestAuthor = Boolean(senderLogin) && senderLogin === authorLogin;
-  const isAuthorizedContributor = association === 'CONTRIBUTOR' && isPullRequestAuthor;
-
-  if (!GITHUB_REVIEW_COMMENT_ASSOCIATIONS.has(association) && !isAuthorizedContributor) {
-    return { eligible: false, reason: 'unauthorized_commenter' };
-  }
-
-  const body = String(comment.body ?? '');
-  if (!GITHUB_REVIEW_MENTION.test(body)) {
-    return { eligible: false, reason: 'no_mention' };
-  }
-  return { eligible: true, reason: 'mention' };
 }
 
 async function handleWebformWebhook(c) {
